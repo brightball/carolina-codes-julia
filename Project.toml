@@ -1,0 +1,21 @@
+name = "CarolinaCodes"
+uuid = "86433fea-fea1-4f45-bb9b-15889518e15a"
+version = "0.1.0"
+authors = ["carolina-codes-julia"]
+
+[deps]
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+LibPQ = "194296ae-ab2e-5f79-8cd4-7183a0a5a0d1"
+
+[compat]
+HTTP = "2.6.7"
+JSON = "1.7.1"
+LibPQ = "1.18.0"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

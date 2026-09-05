@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Launch the Julia + HTTP.jl polyglot API.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if command -v julia >/dev/null 2>&1; then
+  JULIA="$(command -v julia)"
+elif [[ -x "${HOME}/.juliaup/bin/julia" ]]; then
+  JULIA="${HOME}/.juliaup/bin/julia"
+else
+  echo "julia not found on PATH or in ~/.juliaup/bin" >&2
+  exit 1
+fi
+exec "$JULIA" --threads=auto,1 --project="$ROOT" "$ROOT/server.jl"
