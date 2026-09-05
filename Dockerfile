@@ -8,6 +8,7 @@ COPY src ./src
 COPY server.jl ./
 ENV JULIA_DEPOT_PATH=/opt/julia
 ENV JULIA_PKG_PRECOMPILE_AUTO=0
+ENV JULIA_CPU_TARGET=generic
 RUN julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using HTTP, LibPQ, JSON'
 ENV PORT=8080
 EXPOSE 8080
