@@ -7,7 +7,8 @@ COPY Project.toml Manifest.toml ./
 COPY src ./src
 COPY server.jl ./
 ENV JULIA_DEPOT_PATH=/opt/julia
-RUN julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+ENV JULIA_PKG_PRECOMPILE_AUTO=0
+RUN julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using HTTP, LibPQ, JSON'
 ENV PORT=8080
 EXPOSE 8080
 CMD ["julia", "--project=.", "server.jl"]
