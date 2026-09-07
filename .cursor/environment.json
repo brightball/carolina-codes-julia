@@ -1,0 +1,14 @@
+{
+  "name": "carolina-codes-julia",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "install": "make instantiate",
+  "ports": [
+    {
+      "name": "api",
+      "port": 4025
+    }
+  ]
+}
