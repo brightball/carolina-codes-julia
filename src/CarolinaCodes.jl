@@ -35,14 +35,15 @@ const YEAR_SPONSOR_COLS =
 const SPONSOR_COLS =
     "slug, name, website, logo_path, description, twitter_url, linkedin_url, " *
     "youtube_url, instagram_url, facebook_url"
-const TALK_COLS =
-    "slug, title, description, format, youtube_id, year, speaker_slug, languages, topics"
+const TALK_COLS = "slug, title, description, format, youtube_id, year, speaker_slug, languages, topics"
 
 const SQL_COUNT = Ref(0)
 const CONNECT_COUNT = Ref(0)
 const QUERY_HOOK = Ref{Any}(nothing)
+const CONNECT_HOOK = Ref{Any}(nothing)
 const CONN = Ref{Any}(nothing)
 const DB_LOCK = ReentrantLock()
+const REGISTRATION_TASK = Ref{Any}(nothing)
 
 language_version() = string(VERSION)
 
@@ -51,7 +52,7 @@ function reset_counts()
     CONNECT_COUNT[] = 0
 end
 
-function env(name::AbstractString, default::AbstractString="")
+function env(name::AbstractString, default::AbstractString = "")
     v = get(ENV, name, default)
     return isempty(v) ? default : v
 end
@@ -92,9 +93,9 @@ function pg_text_array(value)
         return String[]
     end
     if startswith(stripped, "{") && endswith(stripped, "}")
-        stripped = stripped[2:end-1]
+        stripped = stripped[2:(end-1)]
     elseif startswith(stripped, "[") && endswith(stripped, "]")
-        stripped = stripped[2:end-1]
+        stripped = stripped[2:(end-1)]
     end
     out = String[]
     for part in split(stripped, ',')
@@ -125,38 +126,91 @@ function clean(row)
     return out
 end
 
+"""True when `conn` can run another query. Closed and `CONNECTION_BAD` handles are not reused."""
+function connection_usable(conn)::Bool
+    conn === nothing && return false
+    opened = try
+        isopen(conn)
+    catch
+        false
+    end
+    opened || return false
+    conn isa LibPQ.Connection || return true
+    return try
+        LibPQ.status(conn) == LibPQ.libpq_c.CONNECTION_OK
+    catch
+        false
+    end
+end
+
+function discard_conn(conn)
+    lock(DB_LOCK) do
+        if CONN[] === conn
+            CONN[] = nothing
+        end
+    end
+    conn === nothing && return nothing
+    try
+        close(conn)
+    catch
+    end
+    return nothing
+end
+
+function open_connection()
+    CONNECT_COUNT[] += 1
+    hook = CONNECT_HOOK[]
+    if hook !== nothing
+        return hook()
+    end
+    return LibPQ.Connection(dsn())
+end
+
 function ensure_conn()
     lock(DB_LOCK) do
-        if CONN[] !== nothing
-            return CONN[]
+        current = CONN[]
+        if connection_usable(current)
+            return current
         end
-        CONNECT_COUNT[] += 1
-        CONN[] = LibPQ.Connection(dsn())
+        if current !== nothing
+            CONN[] = nothing
+            try
+                close(current)
+            catch
+            end
+        end
+        CONN[] = open_connection()
         return CONN[]
     end
 end
 
-function db_query(sql::AbstractString, args=Any[])
+function db_query(sql::AbstractString, args = Any[])
     SQL_COUNT[] += 1
-    if QUERY_HOOK[] !== nothing
-        return QUERY_HOOK[](sql, args)
+    hook = QUERY_HOOK[]
+    if hook !== nothing
+        return hook(sql, args)
     end
     conn = ensure_conn()
-    result = isempty(args) ? execute(conn, sql) : execute(conn, sql, args)
-    names = LibPQ.column_names(result)
-    rows = Dict{String,Any}[]
-    for r in result
-        raw = Dict{String,Any}()
-        for (i, name) in enumerate(names)
-            raw[name] = r[i]
+    try
+        result = isempty(args) ? execute(conn, sql) : execute(conn, sql, args)
+        names = LibPQ.column_names(result)
+        rows = Dict{String,Any}[]
+        for r in result
+            raw = Dict{String,Any}()
+            for (i, name) in enumerate(names)
+                raw[name] = r[i]
+            end
+            push!(rows, clean(raw))
         end
-        push!(rows, clean(raw))
+        close(result)
+        return rows
+    catch
+        discard_conn(conn)
+        rethrow()
     end
-    close(result)
-    return rows
 end
 
-function db_query_one(sql::AbstractString, args=Any[])
+function db_query_one(sql::AbstractString, args = Any[])
     rows = db_query(sql, args)
     return isempty(rows) ? nothing : rows[1]
 end
@@ -175,7 +229,7 @@ function uniq_tags(talks, key)
     return out
 end
 
-function talks_for(slug::AbstractString, year=nothing)
+function talks_for(slug::AbstractString, year = nothing)
     if year === nothing
         return db_query(
             "SELECT $TALK_COLS FROM v1_talks WHERE speaker_slug = \$1 ORDER BY year DESC",
@@ -250,9 +304,11 @@ function attach_year_tags(speakers, year::Integer)
     return speakers
 end
 
-function list_speakers(year=nothing)
+function list_speakers(year = nothing)
     if year === nothing
-        return db_query("SELECT $SPEAKER_COLS FROM v1_speakers ORDER BY last_name, first_name")
+        return db_query(
+            "SELECT $SPEAKER_COLS FROM v1_speakers ORDER BY last_name, first_name",
+        )
     end
     rows = db_query(
         "SELECT $SPEAKER_COLS FROM v1_speakers WHERE slug IN " *
@@ -265,7 +321,7 @@ end
 function normalize_path(path::AbstractString)
     isempty(path) && return "/"
     if length(path) > 1 && endswith(path, '/')
-        return path[1:end-1]
+        return path[1:(end-1)]
     end
     return path
 end
@@ -275,7 +331,7 @@ function is_year(s::AbstractString)
 end
 
 """Shipped GET router. Tests call this without a live listen."""
-function handle_get(path::AbstractString, year_query::AbstractString="")
+function handle_get(path::AbstractString, year_query::AbstractString = "")
     path = normalize_path(path)
     parts = [p for p in split(path, '/') if !isempty(p)]
 
@@ -286,8 +342,11 @@ function handle_get(path::AbstractString, year_query::AbstractString="")
         return 200, identity()
     end
     if path == "/v1/years"
-        return 200, Dict{String,Any}(
-            "data" => db_query("SELECT year, slug, name, status FROM v1_years ORDER BY year DESC"),
+        return 200,
+        Dict{String,Any}(
+            "data" => db_query(
+                "SELECT year, slug, name, status FROM v1_years ORDER BY year DESC",
+            ),
         )
     end
     if path == "/v1/speakers"
@@ -297,7 +356,8 @@ function handle_get(path::AbstractString, year_query::AbstractString="")
     if length(parts) == 4 && parts[1] == "v1" && parts[2] == "speakers" && is_year(parts[3])
         year = parse(Int, parts[3])
         slug = parts[4]
-        speaker = db_query_one("SELECT $SPEAKER_COLS FROM v1_speakers WHERE slug = \$1", [slug])
+        speaker =
+            db_query_one("SELECT $SPEAKER_COLS FROM v1_speakers WHERE slug = \$1", [slug])
         speaker === nothing && return 404, Dict{String,Any}("error" => "not_found")
         talks = talks_for(slug, year)
         isempty(talks) && return 404, Dict{String,Any}("error" => "not_found")
@@ -312,7 +372,8 @@ function handle_get(path::AbstractString, year_query::AbstractString="")
     end
     if length(parts) == 3 && parts[1] == "v1" && parts[2] == "speakers"
         slug = parts[3]
-        speaker = db_query_one("SELECT $SPEAKER_COLS FROM v1_speakers WHERE slug = \$1", [slug])
+        speaker =
+            db_query_one("SELECT $SPEAKER_COLS FROM v1_speakers WHERE slug = \$1", [slug])
         speaker === nothing && return 404, Dict{String,Any}("error" => "not_found")
         speaker["talks"] = talks_for(slug)
         speaker["years"] = talk_years(slug)
@@ -346,10 +407,8 @@ function handle_get(path::AbstractString, year_query::AbstractString="")
         slug = parts[3]
         row = db_query_one("SELECT $SPONSOR_COLS FROM v1_sponsors WHERE slug = \$1", [slug])
         row === nothing && return 404, Dict{String,Any}("error" => "not_found")
-        row["sponsorships"] = db_query(
-            "SELECT * FROM v1_sponsorships WHERE sponsor_slug = \$1",
-            [slug],
-        )
+        row["sponsorships"] =
+            db_query("SELECT * FROM v1_sponsorships WHERE sponsor_slug = \$1", [slug])
         return 200, Dict{String,Any}("data" => row)
     end
     return 404, Dict{String,Any}("error" => "not_found")
@@ -381,13 +440,22 @@ function http_handler(req::HTTP.Request)
             body = JSON.json(Dict("error" => "not_found"))
             return HTTP.Response(404, ["Content-Type" => "application/json"], body)
         end
-        status, payload = handle_get(request_path(req.target), query_param(req.target, "year"))
-        return HTTP.Response(status, ["Content-Type" => "application/json"], JSON.json(payload))
+        status, payload =
+            handle_get(request_path(req.target), query_param(req.target, "year"))
+        return HTTP.Response(
+            status,
+            ["Content-Type" => "application/json"],
+            JSON.json(payload),
+        )
     catch e
         println(stderr, "handler error: ", e)
         showerror(stderr, e, catch_backtrace())
         println(stderr)
-        return HTTP.Response(500, ["Content-Type" => "application/json"], JSON.json(Dict("error" => "internal")))
+        return HTTP.Response(
+            500,
+            ["Content-Type" => "application/json"],
+            JSON.json(Dict("error" => "internal")),
+        )
     end
 end
 
@@ -407,9 +475,10 @@ function register_with_elixir()
             target,
             ["Authorization" => "Bearer $token", "Content-Type" => "application/json"],
             JSON.json(body);
-            connect_timeout=5,
-            read_idle_timeout=5,
-            status_exception=false,
+            connect_timeout = 5,
+            read_idle_timeout = 5,
+            retry = false,
+            status_exception = false,
         )
         println(stderr, "registered with elixir: $(resp.status)")
     catch e
@@ -417,11 +486,36 @@ function register_with_elixir()
     end
 end
 
-function run_server()
-    register_with_elixir()
-    port = listen_port()
-    println("carolina-codes-julia listening on [::]:$port")
-    HTTP.serve(http_handler, "::", port; reuseaddr=true)
+"""Start CMS registration off the accept loop. A slow or black-holed Elixir host must not gate `/health`."""
+function schedule_registration()
+    url = env("CAROLINA_URL")
+    token = env("POLYGLOT_REGISTER_TOKEN")
+    if isempty(url) || isempty(token)
+        REGISTRATION_TASK[] = nothing
+        return nothing
+    end
+    # Default thread pool, not `:interactive`. HTTP.serve! accepts on the
+    # interactive pool (`--threads=auto,1`), so this post cannot stall it.
+    REGISTRATION_TASK[] = Threads.@spawn register_with_elixir()
+    return REGISTRATION_TASK[]
 end
+
+function run_server(; block::Bool = true)
+    port = listen_port()
+    server = HTTP.serve!(http_handler, "::", port; reuseaddr = true)
+    bound = HTTP.port(server)
+    println("carolina-codes-julia listening on [::]:$bound")
+    schedule_registration()
+    block && wait(server)
+    return server
+end
+
+precompile(handle_get, (String,))
+precompile(handle_get, (String, String))
+precompile(http_handler, (HTTP.Request{HTTP.EmptyBody},))
+precompile(register_with_elixir, ())
+precompile(identity, ())
+precompile(connection_usable, (Any,))
+precompile(ensure_conn, ())
 
 end # module

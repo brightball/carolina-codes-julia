@@ -1,0 +1,15 @@
+rules:
+  - id: compare-nothing
+    patterns:
+      - pattern-either:
+          - pattern: nothing == ...
+          - pattern: ... == nothing
+          - pattern: nothing != ...
+          - pattern: ... != nothing 
+    message: comparisons of `nothing` should be made with === or !== or with isnothing()
+    languages: [julia]
+    severity: ERROR
+    metadata:
+      category: correctness
+      technology:
+        - julia

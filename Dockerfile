@@ -7,9 +7,8 @@ COPY Project.toml Manifest.toml ./
 COPY src ./src
 COPY server.jl ./
 ENV JULIA_DEPOT_PATH=/opt/julia
-ENV JULIA_PKG_PRECOMPILE_AUTO=0
 ENV JULIA_CPU_TARGET=generic
-RUN julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using HTTP, LibPQ, JSON'
+RUN julia --threads=auto,1 --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using CarolinaCodes, HTTP, LibPQ, JSON; CarolinaCodes.handle_get("/health"); CarolinaCodes.handle_get("/")'
 ENV PORT=8080
 EXPOSE 8080
-CMD ["julia", "--project=.", "server.jl"]
+CMD ["julia", "--threads=auto,1", "--project=.", "server.jl"]

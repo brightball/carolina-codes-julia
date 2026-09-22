@@ -1,0 +1,7 @@
+[deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+CarolinaCodes = "86433fea-fea1-4f45-bb9b-15889518e15a"
+
+[compat]
+Aqua = "0.8"
+julia = "1.10"
